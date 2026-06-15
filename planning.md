@@ -198,15 +198,37 @@ Write out what a full user interaction looks like from start to finish — tool 
 
 **Example user query:** "I'm looking for a vintage graphic tee under $30. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
 
-**Step 1:**
-<!-- What does the agent do first? Which tool is called? With what input? -->
+**Step 0 — Initialize session:**
+`run_agent(query, wardrobe)` calls `_new_session(query, wardrobe)`, creating the session dict with the raw query, the user's wardrobe, and every result field set to its empty default (`search_results=[]`, `selected_item=None`, `outfit_suggestion=None`, `fit_card=None`, `error=None`).
 
-**Step 2:**
-<!-- What happens next? What was returned from step 1? What tool is called now? -->
+**Step 1 — Parse the query:**
+The loop extracts search parameters from the natural-language query and stores them in `session["parsed"]`:
+- `description = "vintage graphic tee"`
+- `size = None` (no size stated in this query)
+- `max_price = 30.0` ("under $30")
 
+The clauses about baggy jeans and chunky sneakers are *not* search parameters — they describe the user's existing wardrobe and are used later by `suggest_outfit`.
 
-**Step 3:**
-<!-- Continue until the full interaction is complete -->
+**Step 2 — Search listings:**
+The loop calls `search_listings("vintage graphic tee", size=None, max_price=30.0)`. It scores listings by keyword overlap and returns the matches sorted best-first, e.g. `lst_006` "Graphic Tee — 2003 Tour Bootleg Style" ($24, depop, good condition) and `lst_033` "Vintage Band Tee — Faded Grey" ($19, depop, fair). The list is stored in `session["search_results"]`.
+
+- **Branch check:** the list is non-empty, so the loop continues. *(If it were `[]`, the loop would set `session["error"]` and return here — see the error path below.)*
+
+**Step 3 — Select the item:**
+The loop sets `session["selected_item"] = results[0]` → the `lst_006` listing dict (the top-ranked match).
+
+**Step 4 — Suggest an outfit:**
+The loop calls `suggest_outfit(selected_item=<lst_006>, wardrobe=<example wardrobe>)`. The tool sees the wardrobe is non-empty, formats its items into an LLM prompt, and returns a string that styles the tee with real wardrobe pieces, e.g. *"Pair this faded graphic tee with your baggy straight-leg jeans and chunky white sneakers for an easy 90s streetwear look. Throw the vintage black denim jacket over the top and let the tee peek out."* Stored in `session["outfit_suggestion"]`.
+
+**Step 5 — Create the fit card:**
+The loop calls `create_fit_card(outfit=<the suggestion>, new_item=<lst_006>)`. The tool returns a casual 2–4 sentence caption mentioning the title, price, and platform once each, e.g. *"thrifted this 2003 tour bootleg tee off depop for $24 and it was MADE for my baggy jeans 🖤 styled it with the chunky sneakers + denim jacket. full fit in my stories"* Stored in `session["fit_card"]`.
+
+**Step 6 — Return:**
+The loop returns the completed `session`. `session["error"]` is `None`, signaling success.
 
 **Final output to user:**
-<!-- What does the user actually see at the end? -->
+Because `session["error"]` is `None`, the UI displays the found item ("Graphic Tee — 2003 Tour Bootleg Style — $24, depop"), the outfit suggestion from Step 4, and the shareable fit card from Step 5.
+
+---
+
+**Error-path variant:** For a query like *"designer ballgown size XXS under $5"*, Step 2's `search_listings` returns `[]`. The loop sets `session["error"] = "No listings matched — try raising your price or removing the size filter."`, skips Steps 3–5 entirely (never calling `suggest_outfit` with empty input), and returns. The UI shows only the error message; `outfit_suggestion` and `fit_card` stay `None`.
