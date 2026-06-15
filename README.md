@@ -59,3 +59,9 @@ wardrobe = get_example_wardrobe()
 3. Build and test each tool individually before connecting them through your planning loop.
 
 Your implementation files go in this same directory. There's no required file structure for your agent code — organize it however makes sense for your design.
+
+## AI Usage
+
+I used **Claude (via Claude Code)** as a coding assistant throughout this project. For each piece I gave it a specific section of `planning.md` as the spec, reviewed what it produced against that spec, and changed anything that didn't match before trusting it.
+
+For example: I gave Claude the **Tool 1 block** (the `description`/`size`/`max_price` inputs, the `list[dict]` return, my relevance definition, and the empty-list failure mode) plus the `load_listings()` docstring, and it produced the keyword-overlap scoring loop in `search_listings()` — but I caught that my first price-filter test passed *vacuously* (`max_price=10` matched nothing, so `all(...)` over an empty list was trivially true), so I raised the ceiling and added real size-filter and sort-order tests. For the **planning loop**, I gave Claude the Planning Loop section (Steps 1–7 with both early-return branches) and the architecture diagram, and it produced the query parser plus the seven-step `run_agent()` loop; its first parser used the whole query as the search description, which leaked wardrobe context like *"I mostly wear baggy jeans"* into the search keywords, so I overrode it to build the description from only the first sentence while still pulling price and size from the full text.

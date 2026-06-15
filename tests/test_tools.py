@@ -4,6 +4,7 @@ import os
 import pytest
 
 from tools import search_listings, suggest_outfit, create_fit_card
+from agent import run_agent
 
 from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
@@ -156,3 +157,56 @@ def test_create_fit_card_varies_across_items():
     card_b = create_fit_card(outfit, item_b)
     assert card_a.strip() and card_b.strip()
     assert card_a != card_b                               # different inputs → different captions
+
+# run_agent() — the planning loop
+
+@needs_api
+def test_run_agent_happy_path():
+    """Match → full pipeline runs; all output fields populated, no error."""
+    session = run_agent("vintage graphic tee under $30", get_example_wardrobe())
+    assert session["error"] is None
+    assert session["parsed"]["description"]            # query was parsed
+    assert len(session["search_results"]) > 0          # search found matches
+    assert session["selected_item"] is not None        # top result selected
+    assert isinstance(session["fit_card"], str) and session["fit_card"].strip()
+
+
+def test_run_agent_no_results_stops_before_llm():
+    """No match → Step 3 early-return. suggest_outfit/create_fit_card NOT called.
+
+    Deterministic (no LLM, no API key). This is the core branching proof: the
+    LLM output fields stay None because the loop never reached those tools.
+    """
+    session = run_agent("designer ballgown size XXS under $5", get_example_wardrobe())
+    assert session["error"] is not None                # helpful message set
+    assert session["search_results"] == []             # search returned nothing
+    assert session["selected_item"] is None            # never selected
+    assert session["outfit_suggestion"] is None        # suggest_outfit skipped
+    assert session["fit_card"] is None                 # create_fit_card skipped
+
+
+def test_run_agent_unparseable_stops_before_search():
+    """No describable item → Step 2 early-return; search never runs."""
+    session = run_agent("under $20", get_example_wardrobe())
+    assert session["error"] is not None
+    assert session["search_results"] == []             # never searched
+    assert session["selected_item"] is None
+    assert session["outfit_suggestion"] is None
+    assert session["fit_card"] is None
+
+
+def test_run_agent_branches_give_distinct_errors():
+    """Two different bad inputs → two different error messages (proves conditional logic,
+    not one fixed sequence)."""
+    no_results = run_agent("designer ballgown size XXS under $5", get_example_wardrobe())
+    unparseable = run_agent("under $20", get_example_wardrobe())
+    assert no_results["error"] != unparseable["error"]
+
+# Trigger create_fit_card with an empty outfit string:
+# python -c "
+# from tools import search_listings, create_fit_card
+# results = search_listings('vintage graphic tee', size=None, max_price=50)
+# print(create_fit_card('', results[0]))"
+# Confirm it returns a descriptive error message string — not a Python exception.
+
+

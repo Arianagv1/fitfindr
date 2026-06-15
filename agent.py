@@ -18,6 +18,8 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -43,6 +45,63 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "fit_card": None,            # string returned by create_fit_card
         "error": None,               # set if the interaction ended early
     }
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+# Filler words to drop when building the search description. Style/garment words
+# (e.g. "vintage", "tee", "denim") are deliberately NOT here — they are signal.
+_STOPWORDS = {
+    "im", "i", "m", "a", "an", "the", "some", "looking", "for", "find",
+    "want", "wanna", "need", "to", "show", "me", "please", "whats", "what",
+    "s", "out", "there", "is", "are", "any", "got", "get", "of", "with",
+    "under", "below", "size", "in",
+}
+
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract search parameters from a natural-language query.
+
+    Method: regex + string-splitting (no LLM — this stays deterministic so the
+    planning loop is testable).
+      - max_price: a number after "under/below/less than/max/$" (e.g. "under $30").
+      - size:      the token after the word "size" (e.g. "size M" -> "M").
+      - description: the FIRST sentence only (split on . ? !), with the price and
+                     size phrases removed and filler words dropped. Using only the
+                     first sentence keeps trailing wardrobe context like
+                     "I mostly wear baggy jeans" out of the search keywords.
+
+    Returns a dict: {"description": str, "size": str | None, "max_price": float | None}.
+    """
+    text = query.lower()
+
+    # max_price — "under $30", "below 30", "less than 25", or a bare "$30".
+    max_price = None
+    m = re.search(r"(?:under|below|less than|max|cheaper than|<)\s*\$?\s*(\d+(?:\.\d+)?)", text)
+    if not m:
+        m = re.search(r"\$\s*(\d+(?:\.\d+)?)", text)
+    if m:
+        max_price = float(m.group(1))
+
+    # size — the token following "size" (letters, digits, or a slash like "S/M").
+    size = None
+    s = re.search(r"size\s+([a-z0-9/]+)", text)
+    if s:
+        size = s.group(1).upper()
+
+    # description — first sentence, minus the price/size phrases and filler words.
+    first_sentence = re.split(r"[.?!]", text)[0]
+    cleaned = re.sub(
+        r"(?:under|below|less than|max|cheaper than|<)\s*\$?\s*\d+(?:\.\d+)?", " ", first_sentence
+    )
+    cleaned = re.sub(r"\$\s*\d+(?:\.\d+)?", " ", cleaned)
+    cleaned = re.sub(r"size\s+[a-z0-9/]+", " ", cleaned)
+    tokens = re.findall(r"[a-z0-9']+", cleaned)
+    keywords = [t for t in tokens if t not in _STOPWORDS]
+    description = " ".join(keywords).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
@@ -92,9 +151,45 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: initialize session state.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into description / size / max_price.
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+    if not parsed["description"]:
+        session["error"] = (
+            "I couldn't tell what you're looking for — try describing the item."
+        )
+        return session
+
+    # Step 3: search. Branch — if nothing matches, stop here. Do NOT call
+    # suggest_outfit with empty input.
+    results = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+    session["search_results"] = results
+    if not results:
+        session["error"] = (
+            "No listings matched — try removing the size or raising your price."
+        )
+        return session
+
+    # Step 4: select the top-ranked result.
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest an outfit. suggest_outfit always returns a non-empty
+    # string (it has its own fallback), but guard defensively anyway.
+    outfit = suggest_outfit(session["selected_item"], wardrobe)
+    if not outfit or not outfit.strip():
+        session["error"] = "Couldn't generate an outfit suggestion — please try again."
+        return session
+    session["outfit_suggestion"] = outfit
+
+    # Step 6: create the shareable fit card (always a string, store as-is).
+    session["fit_card"] = create_fit_card(outfit, session["selected_item"])
+
+    # Step 7: success — session["error"] is still None.
     return session
 
 
