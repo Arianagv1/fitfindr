@@ -15,54 +15,59 @@ You must have at least 3 tools. The three required tools are listed — add any 
 ### Tool 1: search_listings
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Search listings is a function that looks through the listings dataset for items matching the description, optional size, and optional price ceiling. 
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `description` (str): ...
-- `size` (str): ...
-- `max_price` (float): ...
+- `description` (str): keyword describing what the user is looking for
+- `size` (str): size string to filter by or 'None' to skip size filter. Note: Matching is case-INsensitive
+- `max_price` (float): Maximum price, or 'None' to skip size filter. Note: Price is INclusive
 
 **What it returns:**
-<!-- Describe the return value — what fields does a result contain? -->
+This function will return a list of dictionaries list[dict] of matching listings, sorted by relevance with the best matching returned first. Here, relevance is defined as a score = number of keywords from description (lowercased, split on whitespace) that appear in the listing's title + description + style_tags. Listings scoring 0 are dropped. Ties broken by lower price. 
+
+A list of listing dicts sorted by relevance, best match first. Each dict has keys: id (str), title (str), description (str), category (str: tops/bottoms/outerwear/shoes/accessories), style_tags (list[str]), size (str), condition (str: excellent/good/fair), price (float), colors (list[str]), brand (str or None), platform (str: depop/thredUp/poshmark)."
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if no listings match? -->
-
+If nothing mathces, returns an empty list. Note: does NOT raise an exception.
 ---
 
 ### Tool 2: suggest_outfit
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Given a thrifted item and the user's wardrobe, this function should suggest 1-2 complete outfits. 
+
+new_item: a listing dict with the keys listed in Tool 1. wardrobe: a dict with one key items, a list of wardrobe-item dicts; each has id, name (str), category, colors (list[str]), style_tags (list[str]), notes (str or None).
+
+This function calls the Groq LLM _get_groq_client().
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): ...
-- `wardrobe` (dict): ...
+- `new_item` (dict): A listing dictionary (the item the user is considering buying)
+- `wardrobe` (dict): A wardrobe dictionary with an 'items' key that contains a list of wardrobe item dictionaries. This entry cnaa be empty. 
 
 **What it returns:**
-<!-- Describe the return value -->
+This returns a non-empty string with outfit suggestions. 
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the wardrobe is empty or no outfit can be suggested? -->
+If the wardrobe is empty, the return value should offer general styling advice for the item, rather than raising an exception or returning an empty string. 
 
 ---
 
 ### Tool 3: create_fit_card
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+This function generates a short, shareable outfit caption for the thrifted find.
+
+Specifically, around 2–4 sentences and mentions item title, price, and platform once each; casual OOTD tone; higher LLM temperature so output varies.
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `outfit` (...): ...
+- `outfit` (string): The outfit suggestion string from suggest_outfit().
+- `new_item` (dict) : The listing dictionary for the thrifted item. 
 
 **What it returns:**
-<!-- Describe the return value -->
+This function returns a 2-4 sentence string usable as an Instagram/TikTok caption. 
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the outfit data is incomplete? -->
+If the outfit caption is empty or missing, return a descriptive error message string. Note: do NOT raise an exception. 
 
 ---
 
@@ -75,7 +80,16 @@ You must have at least 3 tools. The three required tools are listed — add any 
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
-<!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
+The loop is a fixed sequential pipeline, not an intent classifier. It runs every stage in order, passing state through the session dict, and branches only on failure.
+
+1. Initialize session = _new_session(query, wardrobe).
+2. Parse the query into description, size, max_price; store in session["parsed"]. (State which method: regex / string-split / LLM.) Branch: if no usable description is extracted, set session["error"] = "I couldn't tell what you're looking for — try describing the item." and return session.
+3. Search: results = search_listings(description, size, max_price); store in session["search_results"]. Branch: if results == [], set session["error"] = "No listings matched — try removing the size or raising your price." and return session (do not proceed). In other words: If the list is empty → set session["error"] = "No vintage graphic tees under $30 in size M right now — try raising your price or dropping the size filter." and return session immediately. Do not call suggest_outfit.
+If the list is non-empty → set session["selected_item"] = results[0] and continue to Step 2.
+4. Select: session["selected_item"] = results[0] (top-ranked).
+5. Suggest: session["outfit_suggestion"] = suggest_outfit(selected_item, wardrobe). Branch: if it returns an empty/whitespace string, set session["error"] and return (or substitute a fallback string — pick one and document it).
+6. Caption: session["fit_card"] = create_fit_card(outfit_suggestion, selected_item). This always returns a string (an error string on bad input), so store it as-is.
+7. Return session. Success = session["error"] is None. 
 
 ---
 
@@ -83,6 +97,7 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **How does information from one tool get passed to the next?**
 <!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+State lives in the session dict from _new_session(). Each stage reads the field the previous stage wrote (parsed → search_results → selected_item → outfit_suggestion → fit_card) and error short-circuits the rest.
 
 ---
 
@@ -92,9 +107,9 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | |
-| suggest_outfit | Wardrobe is empty | |
-| create_fit_card | Outfit input is missing or incomplete | |
+| search_listings | No results match the query | Empty list, does not raise exception|
+| suggest_outfit | Wardrobe is empty | Offers general styling advice (avoids raising exception or returning empty string)|
+| create_fit_card | Outfit input is missing or incomplete | Returns descriptive error message string, does not raise exception|
 
 ---
 
@@ -108,6 +123,40 @@ For each tool, describe the specific failure mode you're handling and what the a
      ASCII art, a Mermaid diagram (https://mermaid.js.org/syntax/flowchart.html), or an embedded
      sketch are all fine. You'll share this diagram with an AI tool when asking it to implement
      the planning loop and each individual tool. -->
+
+```mermaid
+flowchart TD
+    User["User query<br/>(natural language)"] -->|raw query string| Loop["Planning Loop<br/>(run_agent)"]
+
+    Loop -->|"_new_session(query, wardrobe)"| Session[("Session state<br/>query · parsed · search_results<br/>selected_item · wardrobe<br/>outfit_suggestion · fit_card · error")]
+
+    Loop -->|"description, size, max_price"| Parse["Parse query"]
+    Parse -->|"parsed params"| Search["search_listings(description, size, max_price)"]
+
+    Search -->|"results = []"| Err["ERROR<br/>session.error = 'No listings found...'<br/>return session early"]
+    Search -->|"results = [item, ...]"| Select["Session: selected_item = results[0]"]
+
+    Select -->|"selected_item, wardrobe"| Suggest["suggest_outfit(selected_item, wardrobe)"]
+    Suggest -->|"outfit_suggestion (str)"| Card["create_fit_card(outfit_suggestion, selected_item)"]
+    Card -->|"fit_card (str)"| Done["Return session<br/>(error is None)"]
+
+    %% state read/write edges
+    Search -. "write search_results" .-> Session
+    Select -. "write selected_item" .-> Session
+    Suggest -. "write outfit_suggestion" .-> Session
+    Card -. "write fit_card" .-> Session
+
+    %% both terminal paths hand the session back to the caller
+    Err -->|"session (error set)"| Out(["Caller / UI<br/>shows error OR fit_card"])
+    Done -->|"session (fit_card set)"| Out
+
+    classDef errstyle fill:#fdd,stroke:#c00,color:#900;
+    class Err errstyle;
+```
+
+**How to read it:** Solid arrows show the main control/data flow; arrow labels name the data passed. Dotted arrows show each tool writing its result back into the `Session` store. The red **ERROR** node is the early-termination branch: if `search_listings` returns `[]`, the loop sets `session["error"]`, skips `suggest_outfit` and `create_fit_card` entirely, and returns. Both the error path and the success path converge on the caller, which checks `session["error"]` to decide whether to display the error message or the finished fit card.
+
+
 
 ---
 
@@ -125,9 +174,22 @@ For each tool, describe the specific failure mode you're handling and what the a
      before trusting it" is a plan. -->
 
 **Milestone 3 — Individual tool implementations:**
+For search_listings, I'll give Claude the Tool 1 block from planning.md (inputs, return value, failure mode) and ask it to implement the function using load_listings() from the data loader. Before running it, I'll check that the generated code filters by all three parameters and handles the empty-results case. Then I'll test it with 3 queries.
+
+For suggest_outfit(), I'll give claude the tool 2 block (both input dictionary shapes, return value, the empty-wardrobe failure models) and ask it to implement the function suggest_outfit(). Before running it, I'll make sure it branches on wardrobe["items"] being empty vs non-empty, that the non-empty branch actually formats the wardrobe items into a prompt, and that it returns a str and never raises on an API error when calling _get_groq_client(). Then I'll test it with three prompts checking properties like: 
+1. real item + example wardrobe → non-empty string that names at least one wardrobe piece (e.g. "baggy jeans", "chunky sneakers").
+2. real item + get_empty_wardrobe() → non-empty string giving general advice, no wardrobe pieces named.
+3. run the same input twice → confirm it doesn't crash and stays on-topic (output may differ — that's fine).
+
+For create_fit_card(), I'll give Claude the tool 3 block plus the style rules that mention title, price, platform, and make sure the LLM runs on higher temperature. Before running it, I'll check it guards against empty/whitespace outfit and returns an error string (not raising an exception) and that it passes new_item['price'] and new_item['platform'] into the prompt, and that the temperature is set higher than the default. Then I'll test it with three prompts checking properties like: 
+1. real outfit string + real item → 2–4 sentences that mention the price and platform.
+2. outfit="" → the descriptive error string (the failure-mode contract).
+3. two different items → confirm the captions actually differ (proves temperature/variety works).
 
 **Milestone 4 — Planning loop and state management:**
+I'll give claude the planning loop section and the architecture diagram. Before running it, I'll check the empty-results branch sets session["error"] and returns before calling suggest_outfit (never passing [] downstream). I'll check two paths in my walkthrough- a happy path where the query matches (no session["error"] and fit_card is a non-empty string) and an error path (session["error"] is a helpful string and outfit_suggestion/fit_card are both 'None').
 
+Tools 2 and 3 produce non-deterministic LLM output, so I verify structural properties (length, required fields mentioned, correct branch taken, no exception) rather than exact strings; the search tool and planning loop are deterministic, so I assert on exact results and the error-vs-success branch. 
 ---
 
 ## A Complete Interaction (Step by Step)
@@ -141,6 +203,7 @@ Write out what a full user interaction looks like from start to finish — tool 
 
 **Step 2:**
 <!-- What happens next? What was returned from step 1? What tool is called now? -->
+
 
 **Step 3:**
 <!-- Continue until the full interaction is complete -->
